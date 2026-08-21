@@ -4,6 +4,11 @@ import {
   createGeneratedApp,
   createMcpApiKey,
   getGeneratedApp,
+  listSchemaHistory,
+  listSchemaMigrations,
+  revokeMcpApiKey,
+  rollbackGeneratedAppSchema,
+  rotateMcpApiKey,
   listGeneratedApps,
   listMcpApiKeys,
   toPublicApp,
@@ -35,10 +40,18 @@ export const appRouter = router({
       const app = await createGeneratedApp(ctx.user.id, input.prompt);
       return toPublicApp(app);
     }),
+    schemaHistory: protectedProcedure.input(z.object({ appId: z.string().min(8).max(32) })).query(({ ctx, input }) => listSchemaHistory(ctx.user.id, input.appId)),
+    schemaMigrations: protectedProcedure.input(z.object({ appId: z.string().min(8).max(32) })).query(({ ctx, input }) => listSchemaMigrations(ctx.user.id, input.appId)),
+    rollbackSchema: protectedProcedure.input(z.object({ appId: z.string().min(8).max(32), targetVersion: z.number().int().min(1) })).mutation(async ({ ctx, input }) => {
+      const result = await rollbackGeneratedAppSchema(ctx.user.id, input.appId, input.targetVersion);
+      return { app: toPublicApp(result.app), schema: result.schema, artifactUrl: result.artifactUrl };
+    }),
   }),
   mcp: router({
     listKeys: protectedProcedure.query(({ ctx }) => listMcpApiKeys(ctx.user.id)),
     createKey: protectedProcedure.input(z.object({ label: z.string().min(2).max(80) })).mutation(({ ctx, input }) => createMcpApiKey(ctx.user.id, input.label)),
+    revokeKey: protectedProcedure.input(z.object({ keyId: z.string().min(8).max(32) })).mutation(({ ctx, input }) => revokeMcpApiKey(ctx.user.id, input.keyId)),
+    rotateKey: protectedProcedure.input(z.object({ keyId: z.string().min(8).max(32), label: z.string().min(2).max(80).optional() })).mutation(({ ctx, input }) => rotateMcpApiKey(ctx.user.id, input.keyId, input.label)),
   }),
 });
 

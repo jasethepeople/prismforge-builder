@@ -8,6 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { registerGenerationStreamRoutes } from "../generationStream";
 import { registerMcpRoutes } from "../mcp";
+import { registerPreviewRoutes } from "../preview";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 
@@ -40,6 +41,7 @@ async function startServer() {
   registerOAuthRoutes(app);
   registerGenerationStreamRoutes(app);
   registerMcpRoutes(app);
+  registerPreviewRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",

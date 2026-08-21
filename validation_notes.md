@@ -50,3 +50,19 @@ The authenticated SQLite artifact action was clicked again and Chrome download h
 In-app error-state evidence:
 
 On the signed-in ready workspace, a temporary browser-only EventSource interruption was injected without modifying persisted project data. Clicking the existing Reforge action produced the user-facing toast and source-panel message `Controlled stream interruption for validation`. The dashboard, ready inspector, artifact links, schema panel, and app library remained visible. The browser’s native EventSource was restored immediately afterward.
+
+## Enhancement pass
+
+Schema migration history is now exposed through a dedicated authenticated query, including version transitions, operation summaries, status, and rollback timestamps. Rollback is guarded by ownership checks, target-version validation, and an explicit browser confirmation.
+
+Preview sessions now use expiring scoped tokens. The preview loads the persisted `src/App.jsx` from object storage, validates imports and restricted APIs, transpiles it, and executes it in a Node VM with an 80 ms budget. The page also renders a read-only schema data view and denies non-React imports and browser persistence/network primitives.
+
+MCP credentials remain hashed at rest and now support create, rotate, list, and revoke operations through the authenticated UI/API. Final automated validation passed: 4 test files, 14 tests, plus TypeScript compilation. The executable preview route was rechecked in the authenticated browser and rendered the executed component region with the bounded-runtime label.
+
+The current source-generation flow also validates model-authored JSX with esbuild before persisting it, and model calls are bounded with a 25-second timeout so the dashboard exits active generation states reliably.
+
+## Final persisted-source and MCP evidence
+
+The dashboard was re-opened after the persisted-source fix. The existing app is now schema v2 with an applied v1 → v2 migration record, a visible Restore v1 control, and operation/timestamp audit metadata. The visible Agent Bridge issued a fresh key and rendered it with rotate/revoke controls; the previous validation keys remain visibly revoked. The authenticated preview was opened from the dashboard and now renders the v2 persisted `src/App.jsx` in the `EXECUTED COMPONENT` section under the 80 ms VM budget, with the read-only schema data controls and 10-minute scoped session label.
+
+The final automated suite passes 14 tests across 4 files, and TypeScript compilation passes.

@@ -1,13 +1,15 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
+import { transform } from "esbuild";
 import { nanoid } from "nanoid";
 import {
   appArtifacts,
+  appSchemaMigrations,
   appSchemaVersions,
   generatedApps,
   mcpApiKeys,
@@ -36,6 +38,35 @@ type PersistedBundle = {
 
 const MODEL_ID = "gpt-5-mini";
 const requireNode = createRequire(import.meta.url);
+
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Model generation timed out; using the safe local blueprint.")), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function buildMigrationDocument(fromVersion: number, toVersion: number) {
+  return {
+    fromVersion,
+    toVersion,
+    operations: ["Regenerated schema from the latest natural-language application brief."],
+    snapshotVersion: toVersion,
+  };
+}
+
+export function hashMcpToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+export function isMcpKeyActive(revokedAt: Date | null) {
+  return revokedAt === null;
+}
 
 function requireDb<T>(db: T | null): T {
   if (!db) throw new Error("The application registry is temporarily unavailable.");
@@ -74,7 +105,7 @@ export function fallbackBlueprint(prompt: string): AppBlueprint {
 
 async function interpretPrompt(prompt: string): Promise<AppBlueprint> {
   try {
-    const response = await invokeLLM({
+    const response = await withTimeout(invokeLLM({
       model: MODEL_ID,
       maxTokens: 1800,
       messages: [
@@ -125,7 +156,7 @@ async function interpretPrompt(prompt: string): Promise<AppBlueprint> {
           },
         },
       },
-    });
+    }), 25_000);
     const raw = response.choices[0]?.message?.content;
     if (!raw || typeof raw !== "string") return fallbackBlueprint(prompt);
     const parsed = JSON.parse(raw) as AppBlueprint;
@@ -220,7 +251,9 @@ async function generateAppSource(blueprint: AppBlueprint, tableName: string) {
       && candidate.includes("useState")
       && candidate.includes(`/api/${tableName}`)
       && !/(eval\s*\(|import\s*\(|localStorage|sessionStorage|document\.cookie|https?:\/\/)/i.test(candidate);
-    return isSafe ? candidate : undefined;
+    if (!isSafe) return undefined;
+    await transform(candidate, { loader: "jsx", format: "cjs", platform: "node", target: "es2020" });
+    return candidate;
   } catch (error) {
     console.warn("[PrismForge] source generation fallback:", error instanceof Error ? error.message : error);
     return undefined;
@@ -293,6 +326,15 @@ export async function buildGeneratedApp(userId: number, appId: string) {
       storagePut(`${prefix}/${makeSlug(blueprint.appName)}-v${schema.version}.zip`, zipBytes, "application/zip"),
     ]);
     await db.insert(appSchemaVersions).values({ appId, version: schema.version, schemaDocument: schema });
+    if (schema.version > 1) {
+      await db.insert(appSchemaMigrations).values({
+        id: nanoid(16),
+        appId,
+        fromVersion: schema.version - 1,
+        toVersion: schema.version,
+        migrationDocument: buildMigrationDocument(schema.version - 1, schema.version),
+      });
+    }
     await db.insert(appArtifacts).values([
       { id: nanoid(16), appId, artifactType: "source_bundle", objectKey: sourceArtifact.key, objectUrl: sourceArtifact.url, byteSize: Buffer.byteLength(sourceText) },
       { id: nanoid(16), appId, artifactType: "sqlite_database", objectKey: sqliteArtifact.key, objectUrl: sqliteArtifact.url, byteSize: sqliteBytes.byteLength },
@@ -322,6 +364,43 @@ export async function buildGeneratedApp(userId: number, appId: string) {
   }
 }
 
+export async function listSchemaHistory(userId: number, appId: string) {
+  const db = requireDb(await getDb());
+  const app = await getGeneratedApp(userId, appId);
+  if (!app) throw new Error("The requested application could not be found.");
+  return db.select().from(appSchemaVersions).where(eq(appSchemaVersions.appId, appId)).orderBy(desc(appSchemaVersions.version));
+}
+
+export async function listSchemaMigrations(userId: number, appId: string) {
+  const db = requireDb(await getDb());
+  const app = await getGeneratedApp(userId, appId);
+  if (!app) throw new Error("The requested application could not be found.");
+  return db.select().from(appSchemaMigrations).where(eq(appSchemaMigrations.appId, appId)).orderBy(desc(appSchemaMigrations.createdAt));
+}
+
+export function validateRollbackTarget(currentVersion: number, targetVersion: number) {
+  if (!Number.isInteger(targetVersion) || targetVersion < 1 || targetVersion >= currentVersion) {
+    throw new Error("Choose a previous schema version to roll back to.");
+  }
+  return true;
+}
+
+export async function rollbackGeneratedAppSchema(userId: number, appId: string, targetVersion: number) {
+  const db = requireDb(await getDb());
+  const app = await getGeneratedApp(userId, appId);
+  if (!app) throw new Error("The requested application could not be found.");
+  validateRollbackTarget(app.schemaVersion, targetVersion);
+  const [target] = await db.select().from(appSchemaVersions).where(and(eq(appSchemaVersions.appId, appId), eq(appSchemaVersions.version, targetVersion))).limit(1);
+  if (!target) throw new Error("The requested schema version does not exist.");
+  const sqliteBytes = provisionSQLite(`${appId}-rollback-${targetVersion}`, target.schemaDocument);
+  const prefix = `prismforge/users/${userId}/apps/${appId}`;
+  const artifact = await storagePut(`${prefix}/isolated-app-v${targetVersion}-rollback.sqlite`, sqliteBytes, "application/vnd.sqlite3");
+  await db.update(appSchemaMigrations).set({ status: "rolled_back", rolledBackAt: new Date() }).where(and(eq(appSchemaMigrations.appId, appId), eq(appSchemaMigrations.toVersion, app.schemaVersion), eq(appSchemaMigrations.status, "applied")));
+  await db.update(generatedApps).set({ schemaVersion: targetVersion, sqliteArtifactKey: artifact.key, sqliteArtifactUrl: artifact.url, updatedAt: new Date() }).where(eq(generatedApps.id, appId));
+  const updated = await getGeneratedApp(userId, appId);
+  return { app: updated!, schema: target.schemaDocument, artifactUrl: artifact.url };
+}
+
 export async function getSourceBundle(userId: number, appId: string) {
   const app = await getGeneratedApp(userId, appId);
   if (!app?.sourceBundleUrl) return null;
@@ -331,20 +410,31 @@ export async function getSourceBundle(userId: number, appId: string) {
 export async function createMcpApiKey(userId: number, label: string) {
   const db = requireDb(await getDb());
   const secret = `pf_mcp_${randomBytes(24).toString("base64url")}`;
-  const tokenHash = createHash("sha256").update(secret).digest("hex");
+  const tokenHash = hashMcpToken(secret);
   await db.insert(mcpApiKeys).values({ id: nanoid(16), userId, label: label.slice(0, 80), tokenPrefix: secret.slice(0, 16), tokenHash });
   return { token: secret, tokenPrefix: secret.slice(0, 16) };
 }
 
 export async function listMcpApiKeys(userId: number) {
   const db = requireDb(await getDb());
-  return db.select({ id: mcpApiKeys.id, label: mcpApiKeys.label, tokenPrefix: mcpApiKeys.tokenPrefix, lastUsedAt: mcpApiKeys.lastUsedAt, createdAt: mcpApiKeys.createdAt }).from(mcpApiKeys).where(eq(mcpApiKeys.userId, userId)).orderBy(desc(mcpApiKeys.createdAt));
+  return db.select({ id: mcpApiKeys.id, label: mcpApiKeys.label, tokenPrefix: mcpApiKeys.tokenPrefix, lastUsedAt: mcpApiKeys.lastUsedAt, createdAt: mcpApiKeys.createdAt, revokedAt: mcpApiKeys.revokedAt }).from(mcpApiKeys).where(eq(mcpApiKeys.userId, userId)).orderBy(desc(mcpApiKeys.createdAt));
+}
+
+export async function revokeMcpApiKey(userId: number, keyId: string) {
+  const db = requireDb(await getDb());
+  const result = await db.update(mcpApiKeys).set({ revokedAt: new Date() }).where(and(eq(mcpApiKeys.id, keyId), eq(mcpApiKeys.userId, userId), isNull(mcpApiKeys.revokedAt)));
+  return result;
+}
+
+export async function rotateMcpApiKey(userId: number, keyId: string, label?: string) {
+  await revokeMcpApiKey(userId, keyId);
+  return createMcpApiKey(userId, label ?? "Rotated builder agent");
 }
 
 export async function getUserForMcpToken(token: string) {
   const db = requireDb(await getDb());
-  const tokenHash = createHash("sha256").update(token).digest("hex");
-  const [key] = await db.select().from(mcpApiKeys).where(eq(mcpApiKeys.tokenHash, tokenHash)).limit(1);
+  const tokenHash = hashMcpToken(token);
+  const [key] = await db.select().from(mcpApiKeys).where(and(eq(mcpApiKeys.tokenHash, tokenHash), isNull(mcpApiKeys.revokedAt))).limit(1);
   if (!key) return null;
   await db.update(mcpApiKeys).set({ lastUsedAt: new Date() }).where(eq(mcpApiKeys.id, key.id));
   return key.userId;

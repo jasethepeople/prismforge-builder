@@ -1,17 +1,7 @@
 import { index, int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
 export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
   id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
@@ -35,6 +25,13 @@ export type AppSchemaDocument = {
   version: number;
   generatedAt: string;
   entities: Array<{ name: string; fields: SchemaField[] }>;
+};
+
+export type SchemaMigrationDocument = {
+  fromVersion: number;
+  toVersion: number;
+  operations: string[];
+  snapshotVersion: number;
 };
 
 export const generatedApps = mysqlTable(
@@ -74,6 +71,21 @@ export const appSchemaVersions = mysqlTable(
   table => [index("appSchemaVersions_app_version_idx").on(table.appId, table.version)]
 );
 
+export const appSchemaMigrations = mysqlTable(
+  "appSchemaMigrations",
+  {
+    id: varchar("id", { length: 32 }).primaryKey(),
+    appId: varchar("appId", { length: 32 }).notNull().references(() => generatedApps.id),
+    fromVersion: int("fromVersion").notNull(),
+    toVersion: int("toVersion").notNull(),
+    migrationDocument: json("migrationDocument").$type<SchemaMigrationDocument>().notNull(),
+    status: mysqlEnum("status", ["applied", "rolled_back"]).default("applied").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    rolledBackAt: timestamp("rolledBackAt"),
+  },
+  table => [index("appSchemaMigrations_app_created_idx").on(table.appId, table.createdAt)]
+);
+
 export const appArtifacts = mysqlTable(
   "appArtifacts",
   {
@@ -98,9 +110,13 @@ export const mcpApiKeys = mysqlTable(
     tokenHash: varchar("tokenHash", { length: 64 }).notNull(),
     lastUsedAt: timestamp("lastUsedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    revokedAt: timestamp("revokedAt"),
   },
   table => [index("mcpApiKeys_hash_idx").on(table.tokenHash), index("mcpApiKeys_user_idx").on(table.userId)]
 );
 
 export type GeneratedApp = typeof generatedApps.$inferSelect;
+export type AppSchemaVersion = typeof appSchemaVersions.$inferSelect;
+export type AppSchemaMigration = typeof appSchemaMigrations.$inferSelect;
 export type AppArtifact = typeof appArtifacts.$inferSelect;
+export type McpApiKey = typeof mcpApiKeys.$inferSelect;

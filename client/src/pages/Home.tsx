@@ -12,6 +12,10 @@ import {
   Code2,
   Copy,
   Database,
+  Eye,
+  History,
+  RotateCcw,
+  ShieldOff,
   Download,
   Fingerprint,
   KeyRound,
@@ -83,6 +87,8 @@ export default function Home() {
   const appsQuery = trpc.apps.list.useQuery(undefined, { enabled: isAuthenticated });
   const createApp = trpc.apps.create.useMutation();
   const createKey = trpc.mcp.createKey.useMutation();
+  const revokeKey = trpc.mcp.revokeKey.useMutation();
+  const rotateKey = trpc.mcp.rotateKey.useMutation();
   const mcpKeys = trpc.mcp.listKeys.useQuery(undefined, { enabled: isAuthenticated });
   const [prompt, setPrompt] = useState("");
   const [activeApp, setActiveApp] = useState<GeneratedApp | null>(null);
@@ -91,11 +97,16 @@ export default function Home() {
   const [streamPhase, setStreamPhase] = useState("Ready for a new build");
   const [isBuilding, setIsBuilding] = useState(false);
   const [mcpToken, setMcpToken] = useState<string | null>(null);
+  const [rollbackTarget, setRollbackTarget] = useState<number | null>(null);
   const streamRef = useRef<EventSource | null>(null);
 
   useEffect(() => () => streamRef.current?.close(), []);
   const sortedApps = appsQuery.data ?? [];
   const displayApp = activeApp ?? sortedApps[0] ?? null;
+  const schemaHistory = trpc.apps.schemaHistory.useQuery({ appId: displayApp?.id ?? "placeholder" }, { enabled: Boolean(isAuthenticated && displayApp?.id) });
+  const schemaMigrations = trpc.apps.schemaMigrations.useQuery({ appId: displayApp?.id ?? "placeholder" }, { enabled: Boolean(isAuthenticated && displayApp?.id) });
+  const rollbackSchema = trpc.apps.rollbackSchema.useMutation();
+  const visibleSchema = schema ?? schemaHistory.data?.find(version => version.version === displayApp?.schemaVersion)?.schemaDocument ?? schemaHistory.data?.[0]?.schemaDocument ?? null;
   const outputLines = useMemo(() => streamCode.split("\n").map((line, index) => ({ line, number: index + 1 })), [streamCode]);
 
   function openApp(app: GeneratedApp) {
@@ -203,6 +214,45 @@ export default function Home() {
     }
   }
 
+  async function rollbackToVersion(version: number) {
+    if (!displayApp || rollbackSchema.isPending) return;
+    const confirmed = window.confirm(`Restore ${displayApp.name} to schema v${version}? This will replace the current isolated SQLite artifact with the selected snapshot.`);
+    if (!confirmed) return;
+    setRollbackTarget(version);
+    try {
+      const result = await rollbackSchema.mutateAsync({ appId: displayApp.id, targetVersion: version });
+      setActiveApp(result.app);
+      setSchema(result.schema);
+      await Promise.all([utils.apps.list.invalidate(), schemaHistory.refetch()]);
+      toast.success(`SQLite sandbox restored to schema v${version}.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Schema rollback failed.");
+    } finally {
+      setRollbackTarget(null);
+    }
+  }
+
+  async function revokeAgentKey(keyId: string) {
+    try {
+      await revokeKey.mutateAsync({ keyId });
+      await mcpKeys.refetch();
+      toast.success("Agent key revoked.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not revoke that key.");
+    }
+  }
+
+  async function rotateAgentKey(keyId: string) {
+    try {
+      const result = await rotateKey.mutateAsync({ keyId, label: "Rotated builder agent" });
+      setMcpToken(result.token);
+      await mcpKeys.refetch();
+      toast.success("Key rotated. Copy the new secret now; it is shown once.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not rotate that key.");
+    }
+  }
+
   function copy(value: string, label: string) {
     void navigator.clipboard.writeText(value);
     toast.success(`${label} copied.`);
@@ -257,11 +307,11 @@ export default function Home() {
           <aside className="inspector-stack">
             <div className="app-card glass-panel">
               <div className="inspector-head"><span className="eyebrow">BUILD MATERIALS</span>{displayApp && <AppStatus status={displayApp.status} />}</div>
-              {displayApp ? <><h3>{displayApp.name}</h3><p>{displayApp.summary}</p><div className="artifact-grid"><div><Database size={15} /><span>Schema</span><b>v{displayApp.schemaVersion}</b></div><div><Layers3 size={15} /><span>Runtime</span><b>Node / React</b></div></div><div className="app-actions"><button className="secondary-action" onClick={reforgeActiveApp} disabled={isBuilding}><Sparkles size={14} /> Reforge</button>{displayApp.exportArtifactUrl ? <a href={displayApp.exportArtifactUrl} className="secondary-action"><Download size={14} /> ZIP export</a> : <button className="secondary-action" disabled><Download size={14} /> ZIP export</button>}</div><div className="app-actions solo-action">{displayApp.sqliteArtifactUrl && <a href={displayApp.sqliteArtifactUrl} className="secondary-action"><Database size={14} /> SQLite artifact</a>}</div></> : <p className="empty-copy">Artifact controls appear after your first successful build.</p>}
+              {displayApp ? <><h3>{displayApp.name}</h3><p>{displayApp.summary}</p><div className="artifact-grid"><div><Database size={15} /><span>Schema</span><b>v{displayApp.schemaVersion}</b></div><div><Layers3 size={15} /><span>Runtime</span><b>Node / React</b></div></div><div className="app-actions"><button className="secondary-action" onClick={reforgeActiveApp} disabled={isBuilding}><Sparkles size={14} /> Reforge</button><a href={`/api/apps/${displayApp.id}/preview`} target="_blank" rel="noreferrer" className="secondary-action"><Eye size={14} /> Preview</a></div><div className="app-actions"><a href={displayApp.exportArtifactUrl ?? undefined} className="secondary-action" aria-disabled={!displayApp.exportArtifactUrl}><Download size={14} /> ZIP export</a></div><div className="app-actions solo-action">{displayApp.sqliteArtifactUrl && <a href={displayApp.sqliteArtifactUrl} className="secondary-action"><Database size={14} /> SQLite artifact</a>}</div></> : <p className="empty-copy">Artifact controls appear after your first successful build.</p>}
             </div>
             <div className="schema-card glass-panel">
               <div className="inspector-head"><span className="eyebrow">DYNAMIC SCHEMA REGISTRY</span><Database size={15} /></div>
-              {schema ? <div className="schema-list">{schema.entities.map(entity => <div key={entity.name}><strong>{entity.name}</strong>{entity.fields.map(field => <span key={field.name}><i className={field.required ? "required" : ""} />{field.name}<em>{field.type}</em></span>)}</div>)}</div> : <p className="empty-copy">The versioned entity registry is derived from your app brief and stored with the bundle.</p>}
+              {visibleSchema ? <div className="schema-list">{visibleSchema.entities.map(entity => <div key={entity.name}><strong>{entity.name}</strong>{entity.fields.map(field => <span key={field.name}><i className={field.required ? "required" : ""} />{field.name}<em>{field.type}</em></span>)}</div>)}<div className="history-strip"><span><History size={12} /> {schemaHistory.data?.length ?? 1} snapshots</span>{(schemaHistory.data ?? []).filter(version => version.version < (displayApp?.schemaVersion ?? 1)).slice(0, 2).map(version => <button key={version.version} onClick={() => rollbackToVersion(version.version)} disabled={rollbackSchema.isPending}><RotateCcw size={11} /> Restore v{version.version}{rollbackTarget === version.version ? "…" : ""}</button>)}</div>{schemaMigrations.data?.length ? <div className="migration-log">{schemaMigrations.data.slice(0, 3).map(migration => <span key={migration.id}><History size={10} /> v{migration.fromVersion} → v{migration.toVersion} · {migration.status} · {migration.migrationDocument.operations[0]}{migration.rolledBackAt ? ` · rolled back ${formatDate(migration.rolledBackAt)}` : ""}</span>)}</div> : null}</div> : <p className="empty-copy">The versioned entity registry is derived from your app brief and stored with the bundle.</p>}
             </div>
           </aside>
         </section>
@@ -273,7 +323,7 @@ export default function Home() {
 
         <section id="agent-bridge" className="agent-bridge glass-panel">
           <div className="bridge-icon"><Network size={22} /></div><div className="bridge-copy"><p className="eyebrow">MODEL CONTEXT PROTOCOL</p><h2>Programmatic build bridge</h2><p>Issue a scoped agent key to call the protected MCP endpoint at <code>/api/mcp</code>. Tools include build, list apps, and app metadata retrieval.</p></div>
-          <div className="bridge-control">{mcpToken ? <div className="token-reveal"><span>{mcpToken}</span><button onClick={() => copy(mcpToken, "Agent key")}><Copy size={15} /></button><button onClick={() => setMcpToken(null)}><X size={15} /></button></div> : <button className="secondary-action" onClick={createMcpKey} disabled={createKey.isPending}><KeyRound size={15} /> {createKey.isPending ? "Issuing key" : "Issue agent key"}</button>}<small>{mcpKeys.data?.length ?? 0} active key{(mcpKeys.data?.length ?? 0) === 1 ? "" : "s"}</small></div>
+          <div className="bridge-control">{mcpToken ? <div className="token-reveal"><span>{mcpToken}</span><button onClick={() => copy(mcpToken, "Agent key")}><Copy size={15} /></button><button onClick={() => setMcpToken(null)}><X size={15} /></button></div> : <button className="secondary-action" onClick={createMcpKey} disabled={createKey.isPending}><KeyRound size={15} /> {createKey.isPending ? "Issuing key" : "Issue agent key"}</button>}<div className="mcp-key-list">{(mcpKeys.data ?? []).map(key => <div className={cn("mcp-key-row", key.revokedAt && "revoked")} key={key.id}><span><KeyRound size={11} /> {key.tokenPrefix}…</span>{key.revokedAt ? <small>revoked</small> : <><button onClick={() => rotateAgentKey(key.id)} disabled={rotateKey.isPending}><RotateCcw size={11} /> rotate</button><button onClick={() => revokeAgentKey(key.id)} disabled={revokeKey.isPending}><ShieldOff size={11} /> revoke</button></>}</div>)}</div><small>{(mcpKeys.data ?? []).filter(key => !key.revokedAt).length} active key{(mcpKeys.data ?? []).filter(key => !key.revokedAt).length === 1 ? "" : "s"}</small></div>
         </section>
       </section>
     </main>

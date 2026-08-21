@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
 import { buildBundle, buildMigrationDocument, buildSchema, fallbackBlueprint, hashMcpToken, isMcpKeyActive, validateRollbackTarget } from "./appBuilder";
-import { createPreviewSession, escapeHtml, executeGeneratedSource, getPreviewSession, isPreviewSourceSafe, revokePreviewSession } from "./preview";
+import { buildPreviewFixtures, createPreviewSession, escapeHtml, executeGeneratedSource, getPreviewSession, isPreviewSourceSafe, revokePreviewSession } from "./preview";
 
 describe("PrismForge enhancement contracts", () => {
+  it("creates deterministic, read-only schema-derived preview fixtures", () => {
+    const entities = [{ name: "Task", fields: [{ name: "title", type: "text", required: true }, { name: "done", type: "boolean", required: false }, { name: "dueAt", type: "timestamp", required: false }] }];
+    const first = buildPreviewFixtures(entities, "app-fixture");
+    const second = buildPreviewFixtures(entities, "app-fixture");
+    expect(first).toEqual(second);
+    expect(first[0]?.rows).toHaveLength(3);
+    expect(first[0]?.rows[0]).toMatchObject({ title: expect.any(String), done: false, dueAt: expect.stringContaining("2026-01-10") });
+  });
   it("records an explicit forward migration between schema snapshots", () => {
     const migration = buildMigrationDocument(2, 3);
     expect(migration).toEqual({
@@ -35,7 +43,7 @@ describe("PrismForge enhancement contracts", () => {
   it("exposes migration history and MCP lifecycle procedures", () => {
     const procedures = Object.keys((appRouter as any)._def.procedures);
     expect(procedures).toEqual(expect.arrayContaining(["apps.schemaHistory", "apps.schemaMigrations", "apps.rollbackSchema"]));
-    expect(procedures).toEqual(expect.arrayContaining(["mcp.createKey", "mcp.listKeys", "mcp.revokeKey", "mcp.rotateKey"]));
+    expect(procedures).toEqual(expect.arrayContaining(["mcp.createKey", "mcp.listKeys", "mcp.revokeKey", "mcp.rotateKey", "apps.runtimeLogs", "apps.assignWorkspace", "workspaces.list", "workspaces.create"]));
   });
 
   it("executes a generated React component inside the bounded renderer", async () => {

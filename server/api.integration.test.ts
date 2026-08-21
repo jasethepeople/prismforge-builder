@@ -12,6 +12,7 @@ const builderMocks = vi.hoisted(() => ({
   revokeMcpApiKey: vi.fn(),
   rotateMcpApiKey: vi.fn(),
   getGeneratedApp: vi.fn(),
+  getAccessibleGeneratedApp: vi.fn(),
 }));
 const sdkMocks = vi.hoisted(() => ({ authenticateRequest: vi.fn() }));
 const storageMocks = vi.hoisted(() => ({ storageGetSignedUrl: vi.fn() }));
@@ -97,7 +98,7 @@ describe("preview HTTP integration", () => {
 
   it("does not expose another user’s app through the preview route", async () => {
     sdkMocks.authenticateRequest.mockResolvedValue(user);
-    builderMocks.getGeneratedApp.mockResolvedValue(null);
+    builderMocks.getAccessibleGeneratedApp.mockResolvedValue(null);
     ({ server, baseUrl } = await createPreviewServer());
     const response = await fetch(`${baseUrl}/api/apps/app-integration/preview`);
     expect(response.status).toBe(404);
@@ -105,7 +106,7 @@ describe("preview HTTP integration", () => {
 
   it("rejects expired and revoked preview tokens by issuing a fresh session", async () => {
     sdkMocks.authenticateRequest.mockResolvedValue(user);
-    builderMocks.getGeneratedApp.mockResolvedValue({ id: "app-integration", userId: 42, prompt: "Build a brief workspace", schemaVersion: 1, status: "ready", name: "Integration app", summary: "A test app", updatedAt: new Date(), sourceBundleUrl: null });
+    builderMocks.getAccessibleGeneratedApp.mockResolvedValue({ id: "app-integration", userId: 42, prompt: "Build a brief workspace", schemaVersion: 1, status: "ready", name: "Integration app", summary: "A test app", updatedAt: new Date(), sourceBundleUrl: null });
     ({ server, baseUrl } = await createPreviewServer());
     const expired = createPreviewSession(42, "app-integration", Date.now() - 10 * 60 * 1000 - 1);
     const expiredResponse = await fetch(`${baseUrl}/api/apps/app-integration/preview?session=${expired.token}`, { redirect: "manual" });
@@ -124,7 +125,7 @@ describe("preview HTTP integration", () => {
 
   it("issues a scoped preview session through the HTTP route for an owned app", async () => {
     sdkMocks.authenticateRequest.mockResolvedValue(user);
-    builderMocks.getGeneratedApp.mockResolvedValue({ id: "app-integration", userId: 42, prompt: "Build a brief workspace", schemaVersion: 1, status: "ready", name: "Integration app", summary: "A test app", updatedAt: new Date(), sourceBundleUrl: null });
+    builderMocks.getAccessibleGeneratedApp.mockResolvedValue({ id: "app-integration", userId: 42, prompt: "Build a brief workspace", schemaVersion: 1, status: "ready", name: "Integration app", summary: "A test app", updatedAt: new Date(), sourceBundleUrl: null });
     ({ server, baseUrl } = await createPreviewServer());
     const response = await fetch(`${baseUrl}/api/apps/app-integration/preview`, { redirect: "manual" });
     expect(response.status).toBe(302);

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -13,10 +13,12 @@ import {
   appSchemaVersions,
   generatedApps,
   mcpApiKeys,
+  workspaceMembers,
   type AppSchemaDocument,
   type GeneratedApp,
 } from "../drizzle/schema";
 import { getDb } from "./db";
+import { recordRuntimeLog } from "./collaboration";
 import { invokeLLM } from "./_core/llm";
 import { storagePut } from "./storage";
 
@@ -289,12 +291,16 @@ export async function createGeneratedApp(userId: number, prompt: string) {
     model: MODEL_ID,
   });
   const [app] = await db.select().from(generatedApps).where(eq(generatedApps.id, id)).limit(1);
+  void recordRuntimeLog(userId, id, "app.created", "Application generation queued.").catch(() => undefined);
   return app;
 }
 
 export async function listGeneratedApps(userId: number) {
   const db = requireDb(await getDb());
-  return db.select().from(generatedApps).where(eq(generatedApps.userId, userId)).orderBy(desc(generatedApps.createdAt));
+  const owned = await db.select().from(generatedApps).where(eq(generatedApps.userId, userId)).orderBy(desc(generatedApps.createdAt));
+  const shared = await db.select({ app: generatedApps }).from(generatedApps).innerJoin(workspaceMembers, eq(workspaceMembers.workspaceId, generatedApps.workspaceId)).where(eq(workspaceMembers.userId, userId)).orderBy(desc(generatedApps.createdAt));
+  const seen = new Set(owned.map(app => app.id));
+  return [...owned, ...shared.map(row => row.app).filter(app => !seen.has(app.id))].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
 }
 
 export async function getGeneratedApp(userId: number, appId: string) {
@@ -303,11 +309,22 @@ export async function getGeneratedApp(userId: number, appId: string) {
   return app;
 }
 
+export async function getAccessibleGeneratedApp(userId: number, appId: string, roles: Array<"owner" | "editor" | "viewer"> = ["owner", "editor", "viewer"]) {
+  const owned = await getGeneratedApp(userId, appId);
+  if (owned) return owned;
+  const db = requireDb(await getDb());
+  const [membership] = await db.select().from(workspaceMembers).where(and(eq(workspaceMembers.userId, userId), inArray(workspaceMembers.role, roles))).limit(1);
+  if (!membership) return undefined;
+  const [shared] = await db.select().from(generatedApps).where(and(eq(generatedApps.id, appId), eq(generatedApps.workspaceId, membership.workspaceId))).limit(1);
+  return shared;
+}
+
 export async function buildGeneratedApp(userId: number, appId: string) {
   const db = requireDb(await getDb());
-  const app = await getGeneratedApp(userId, appId);
-  if (!app) throw new Error("The requested application could not be found.");
+  const app = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor"]);
+  if (!app) throw new Error("The requested application could not be found or you do not have editor access.");
   await db.update(generatedApps).set({ status: "building", errorMessage: null }).where(eq(generatedApps.id, appId));
+  void recordRuntimeLog(userId, appId, "build.started", "Application build started.").catch(() => undefined);
   try {
     const blueprint = await interpretPrompt(app.prompt);
     const schema = buildSchema(blueprint, app.status === "ready" ? app.schemaVersion + 1 : 1);
@@ -355,25 +372,27 @@ export async function buildGeneratedApp(userId: number, appId: string) {
       exportArtifactUrl: exportArtifact.url,
       updatedAt: new Date(),
     }).where(eq(generatedApps.id, appId));
-    const built = await getGeneratedApp(userId, appId);
+    const built = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor"]);
+    void recordRuntimeLog(userId, appId, "build.completed", `Application build completed at schema v${schema.version}.`, "info", { schemaVersion: schema.version }).catch(() => undefined);
     return { app: built!, previewCode: bundle.files["src/App.jsx"], schema, bundle };
   } catch (error) {
     const message = error instanceof Error ? error.message : "An unexpected generation error occurred.";
     await db.update(generatedApps).set({ status: "failed", errorMessage: message, updatedAt: new Date() }).where(eq(generatedApps.id, appId));
+    void recordRuntimeLog(userId, appId, "build.failed", message, "error").catch(() => undefined);
     throw error;
   }
 }
 
 export async function listSchemaHistory(userId: number, appId: string) {
   const db = requireDb(await getDb());
-  const app = await getGeneratedApp(userId, appId);
+  const app = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor", "viewer"]);
   if (!app) throw new Error("The requested application could not be found.");
   return db.select().from(appSchemaVersions).where(eq(appSchemaVersions.appId, appId)).orderBy(desc(appSchemaVersions.version));
 }
 
 export async function listSchemaMigrations(userId: number, appId: string) {
   const db = requireDb(await getDb());
-  const app = await getGeneratedApp(userId, appId);
+  const app = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor", "viewer"]);
   if (!app) throw new Error("The requested application could not be found.");
   return db.select().from(appSchemaMigrations).where(eq(appSchemaMigrations.appId, appId)).orderBy(desc(appSchemaMigrations.createdAt));
 }
@@ -387,8 +406,8 @@ export function validateRollbackTarget(currentVersion: number, targetVersion: nu
 
 export async function rollbackGeneratedAppSchema(userId: number, appId: string, targetVersion: number) {
   const db = requireDb(await getDb());
-  const app = await getGeneratedApp(userId, appId);
-  if (!app) throw new Error("The requested application could not be found.");
+  const app = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor"]);
+  if (!app) throw new Error("The requested application could not be found or you do not have editor access.");
   validateRollbackTarget(app.schemaVersion, targetVersion);
   const [target] = await db.select().from(appSchemaVersions).where(and(eq(appSchemaVersions.appId, appId), eq(appSchemaVersions.version, targetVersion))).limit(1);
   if (!target) throw new Error("The requested schema version does not exist.");
@@ -397,12 +416,13 @@ export async function rollbackGeneratedAppSchema(userId: number, appId: string, 
   const artifact = await storagePut(`${prefix}/isolated-app-v${targetVersion}-rollback.sqlite`, sqliteBytes, "application/vnd.sqlite3");
   await db.update(appSchemaMigrations).set({ status: "rolled_back", rolledBackAt: new Date() }).where(and(eq(appSchemaMigrations.appId, appId), eq(appSchemaMigrations.toVersion, app.schemaVersion), eq(appSchemaMigrations.status, "applied")));
   await db.update(generatedApps).set({ schemaVersion: targetVersion, sqliteArtifactKey: artifact.key, sqliteArtifactUrl: artifact.url, updatedAt: new Date() }).where(eq(generatedApps.id, appId));
-  const updated = await getGeneratedApp(userId, appId);
+  const updated = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor"]);
+  void recordRuntimeLog(userId, appId, "schema.rolled_back", `Schema rolled back to v${targetVersion}.`, "warn", { targetVersion }).catch(() => undefined);
   return { app: updated!, schema: target.schemaDocument, artifactUrl: artifact.url };
 }
 
 export async function getSourceBundle(userId: number, appId: string) {
-  const app = await getGeneratedApp(userId, appId);
+  const app = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor", "viewer"]);
   if (!app?.sourceBundleUrl) return null;
   return app.sourceBundleUrl;
 }
@@ -412,6 +432,7 @@ export async function createMcpApiKey(userId: number, label: string) {
   const secret = `pf_mcp_${randomBytes(24).toString("base64url")}`;
   const tokenHash = hashMcpToken(secret);
   await db.insert(mcpApiKeys).values({ id: nanoid(16), userId, label: label.slice(0, 80), tokenPrefix: secret.slice(0, 16), tokenHash });
+  void recordRuntimeLog(userId, null, "mcp.key_created", "MCP key issued.", "info", { label: label.slice(0, 80) }).catch(() => undefined);
   return { token: secret, tokenPrefix: secret.slice(0, 16) };
 }
 
@@ -423,11 +444,13 @@ export async function listMcpApiKeys(userId: number) {
 export async function revokeMcpApiKey(userId: number, keyId: string) {
   const db = requireDb(await getDb());
   const result = await db.update(mcpApiKeys).set({ revokedAt: new Date() }).where(and(eq(mcpApiKeys.id, keyId), eq(mcpApiKeys.userId, userId), isNull(mcpApiKeys.revokedAt)));
+  void recordRuntimeLog(userId, null, "mcp.key_revoked", "MCP key revoked.", "warn", { keyId }).catch(() => undefined);
   return result;
 }
 
 export async function rotateMcpApiKey(userId: number, keyId: string, label?: string) {
   await revokeMcpApiKey(userId, keyId);
+  void recordRuntimeLog(userId, null, "mcp.key_rotated", "MCP key rotated.", "warn", { keyId }).catch(() => undefined);
   return createMcpApiKey(userId, label ?? "Rotated builder agent");
 }
 

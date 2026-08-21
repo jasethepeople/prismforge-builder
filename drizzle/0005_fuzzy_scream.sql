@@ -1,0 +1,1 @@
+ALTER TABLE `appRuntimeLogs` MODIFY COLUMN `appId` varchar(32);

@@ -39,6 +39,7 @@ export const generatedApps = mysqlTable(
   {
     id: varchar("id", { length: 32 }).primaryKey(),
     userId: int("userId").notNull().references(() => users.id),
+    workspaceId: varchar("workspaceId", { length: 32 }).references(() => workspaces.id),
     name: varchar("name", { length: 120 }).notNull(),
     slug: varchar("slug", { length: 140 }).notNull(),
     prompt: text("prompt").notNull(),
@@ -56,7 +57,7 @@ export const generatedApps = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => [index("generatedApps_user_created_idx").on(table.userId, table.createdAt)]
+  table => [index("generatedApps_user_created_idx").on(table.userId, table.createdAt), index("generatedApps_workspace_idx").on(table.workspaceId)]
 );
 
 export const appSchemaVersions = mysqlTable(
@@ -100,6 +101,60 @@ export const appArtifacts = mysqlTable(
   table => [index("appArtifacts_app_type_idx").on(table.appId, table.artifactType)]
 );
 
+export const workspaces = mysqlTable(
+  "workspaces",
+  {
+    id: varchar("id", { length: 32 }).primaryKey(),
+    ownerId: int("ownerId").notNull().references(() => users.id),
+    name: varchar("name", { length: 120 }).notNull(),
+    slug: varchar("slug", { length: 140 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [index("workspaces_owner_idx").on(table.ownerId)]
+);
+
+export const workspaceInvites = mysqlTable(
+  "workspaceInvites",
+  {
+    id: varchar("id", { length: 32 }).primaryKey(),
+    workspaceId: varchar("workspaceId", { length: 32 }).notNull().references(() => workspaces.id),
+    invitedBy: int("invitedBy").notNull().references(() => users.id),
+    email: varchar("email", { length: 320 }).notNull(),
+    role: mysqlEnum("role", ["editor", "viewer"]).default("viewer").notNull(),
+    acceptedAt: timestamp("acceptedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [index("workspaceInvites_workspace_idx").on(table.workspaceId), index("workspaceInvites_email_idx").on(table.email)]
+);
+
+export const workspaceMembers = mysqlTable(
+  "workspaceMembers",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workspaceId: varchar("workspaceId", { length: 32 }).notNull().references(() => workspaces.id),
+    userId: int("userId").notNull().references(() => users.id),
+    role: mysqlEnum("role", ["owner", "editor", "viewer"]).default("viewer").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [index("workspaceMembers_workspace_user_idx").on(table.workspaceId, table.userId), index("workspaceMembers_user_idx").on(table.userId)]
+);
+
+export const appRuntimeLogs = mysqlTable(
+  "appRuntimeLogs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    appId: varchar("appId", { length: 32 }).references(() => generatedApps.id),
+    userId: int("userId").notNull().references(() => users.id),
+    event: varchar("event", { length: 64 }).notNull(),
+    level: mysqlEnum("level", ["info", "warn", "error"]).default("info").notNull(),
+    message: text("message").notNull(),
+    metadata: json("metadata").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [index("appRuntimeLogs_app_created_idx").on(table.appId, table.createdAt), index("appRuntimeLogs_user_idx").on(table.userId)]
+);
+
 export const mcpApiKeys = mysqlTable(
   "mcpApiKeys",
   {
@@ -120,3 +175,7 @@ export type AppSchemaVersion = typeof appSchemaVersions.$inferSelect;
 export type AppSchemaMigration = typeof appSchemaMigrations.$inferSelect;
 export type AppArtifact = typeof appArtifacts.$inferSelect;
 export type McpApiKey = typeof mcpApiKeys.$inferSelect;
+export type Workspace = typeof workspaces.$inferSelect;
+export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
+export type WorkspaceInvite = typeof workspaceInvites.$inferSelect;
+export type AppRuntimeLog = typeof appRuntimeLogs.$inferSelect;

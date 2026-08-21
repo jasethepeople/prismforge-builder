@@ -2,6 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { filterRuntimeLogs } from "../../../shared/runtimeLogs";
 import {
   ArrowUpRight,
   Bot,
@@ -24,6 +25,8 @@ import {
   LockKeyhole,
   Network,
   Plus,
+  Users,
+  UserPlus,
   ScanFace,
   Sparkles,
   TerminalSquare,
@@ -90,6 +93,13 @@ export default function Home() {
   const revokeKey = trpc.mcp.revokeKey.useMutation();
   const rotateKey = trpc.mcp.rotateKey.useMutation();
   const mcpKeys = trpc.mcp.listKeys.useQuery(undefined, { enabled: isAuthenticated });
+  const workspacesQuery = trpc.workspaces.list.useQuery(undefined, { enabled: isAuthenticated });
+  const createWorkspace = trpc.workspaces.create.useMutation();
+  const inviteWorkspace = trpc.workspaces.invite.useMutation();
+  const setMemberRole = trpc.workspaces.setMemberRole.useMutation();
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"editor" | "viewer">("viewer");
+  const [logFilter, setLogFilter] = useState("");
   const [prompt, setPrompt] = useState("");
   const [activeApp, setActiveApp] = useState<GeneratedApp | null>(null);
   const [streamCode, setStreamCode] = useState("");
@@ -103,11 +113,17 @@ export default function Home() {
   useEffect(() => () => streamRef.current?.close(), []);
   const sortedApps = appsQuery.data ?? [];
   const displayApp = activeApp ?? sortedApps[0] ?? null;
+  const activeWorkspace = workspacesQuery.data?.[0]?.workspace ?? null;
+  const membersQuery = trpc.workspaces.members.useQuery({ workspaceId: activeWorkspace?.id ?? "placeholder" }, { enabled: isAuthenticated && Boolean(activeWorkspace?.id) });
+  const invitesQuery = trpc.workspaces.invites.useQuery({ workspaceId: activeWorkspace?.id ?? "placeholder" }, { enabled: isAuthenticated && Boolean(activeWorkspace?.id) });
+  const runtimeLogsQuery = trpc.apps.runtimeLogs.useQuery({ appId: displayApp?.id ?? "" }, { enabled: isAuthenticated && Boolean(displayApp?.id) });
+  const logEvent = trpc.apps.log.useMutation();
   const schemaHistory = trpc.apps.schemaHistory.useQuery({ appId: displayApp?.id ?? "placeholder" }, { enabled: Boolean(isAuthenticated && displayApp?.id) });
   const schemaMigrations = trpc.apps.schemaMigrations.useQuery({ appId: displayApp?.id ?? "placeholder" }, { enabled: Boolean(isAuthenticated && displayApp?.id) });
   const rollbackSchema = trpc.apps.rollbackSchema.useMutation();
   const visibleSchema = schema ?? schemaHistory.data?.find(version => version.version === displayApp?.schemaVersion)?.schemaDocument ?? schemaHistory.data?.[0]?.schemaDocument ?? null;
   const outputLines = useMemo(() => streamCode.split("\n").map((line, index) => ({ line, number: index + 1 })), [streamCode]);
+  const visibleLogs = useMemo(() => filterRuntimeLogs(runtimeLogsQuery.data ?? [], logFilter).slice(0, 8), [runtimeLogsQuery.data, logFilter]);
 
   function openApp(app: GeneratedApp) {
     setActiveApp(app);
@@ -253,6 +269,43 @@ export default function Home() {
     }
   }
 
+  async function changeMemberRole(memberId: number, role: "editor" | "viewer") {
+    if (!activeWorkspace) return;
+    try {
+      await setMemberRole.mutateAsync({ workspaceId: activeWorkspace.id, memberId, role });
+      await membersQuery.refetch();
+      toast.success("Member role updated.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update member role.");
+    }
+  }
+
+  async function inviteTeammate() {
+    if (!activeWorkspace || !inviteEmail.trim()) return;
+    try {
+      await inviteWorkspace.mutateAsync({ workspaceId: activeWorkspace.id, email: inviteEmail.trim(), role: inviteRole });
+      setInviteEmail("");
+      await invitesQuery.refetch();
+      toast.success("Invitation record created. Share the workspace invite through your team channel.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create the workspace invitation.");
+    }
+  }
+
+  async function createTeamWorkspace() {
+    try {
+      await createWorkspace.mutateAsync({ name: "Launch team workspace" });
+      await workspacesQuery.refetch();
+      toast.success("Workspace created. Invite-ready collaboration is now available.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create the workspace.");
+    }
+  }
+
+  function trackArtifact(event: "export.downloaded" | "sqlite.downloaded" | "preview.opened", message: string) {
+    if (displayApp) void logEvent.mutate({ appId: displayApp.id, event, message });
+  }
+
   function copy(value: string, label: string) {
     void navigator.clipboard.writeText(value);
     toast.success(`${label} copied.`);
@@ -307,7 +360,7 @@ export default function Home() {
           <aside className="inspector-stack">
             <div className="app-card glass-panel">
               <div className="inspector-head"><span className="eyebrow">BUILD MATERIALS</span>{displayApp && <AppStatus status={displayApp.status} />}</div>
-              {displayApp ? <><h3>{displayApp.name}</h3><p>{displayApp.summary}</p><div className="artifact-grid"><div><Database size={15} /><span>Schema</span><b>v{displayApp.schemaVersion}</b></div><div><Layers3 size={15} /><span>Runtime</span><b>Node / React</b></div></div><div className="app-actions"><button className="secondary-action" onClick={reforgeActiveApp} disabled={isBuilding}><Sparkles size={14} /> Reforge</button><a href={`/api/apps/${displayApp.id}/preview`} target="_blank" rel="noreferrer" className="secondary-action"><Eye size={14} /> Preview</a></div><div className="app-actions"><a href={displayApp.exportArtifactUrl ?? undefined} className="secondary-action" aria-disabled={!displayApp.exportArtifactUrl}><Download size={14} /> ZIP export</a></div><div className="app-actions solo-action">{displayApp.sqliteArtifactUrl && <a href={displayApp.sqliteArtifactUrl} className="secondary-action"><Database size={14} /> SQLite artifact</a>}</div></> : <p className="empty-copy">Artifact controls appear after your first successful build.</p>}
+              {displayApp ? <><h3>{displayApp.name}</h3><p>{displayApp.summary}</p><div className="artifact-grid"><div><Database size={15} /><span>Schema</span><b>v{displayApp.schemaVersion}</b></div><div><Layers3 size={15} /><span>Runtime</span><b>Node / React</b></div></div><div className="app-actions"><button className="secondary-action" onClick={reforgeActiveApp} disabled={isBuilding}><Sparkles size={14} /> Reforge</button><a href={`/api/apps/${displayApp.id}/preview`} target="_blank" rel="noreferrer" onClick={() => trackArtifact("preview.opened", "Preview opened from the app inspector.")} className="secondary-action"><Eye size={14} /> Preview</a></div><div className="app-actions"><a href={displayApp.exportArtifactUrl ?? undefined} onClick={() => displayApp.exportArtifactUrl && trackArtifact("export.downloaded", "ZIP export download requested.")} className="secondary-action" aria-disabled={!displayApp.exportArtifactUrl}><Download size={14} /> ZIP export</a></div><div className="app-actions solo-action">{displayApp.sqliteArtifactUrl && <a href={displayApp.sqliteArtifactUrl} onClick={() => trackArtifact("sqlite.downloaded", "SQLite artifact download requested.")} className="secondary-action"><Database size={14} /> SQLite artifact</a>}</div></> : <p className="empty-copy">Artifact controls appear after your first successful build.</p>}
             </div>
             <div className="schema-card glass-panel">
               <div className="inspector-head"><span className="eyebrow">DYNAMIC SCHEMA REGISTRY</span><Database size={15} /></div>
@@ -319,6 +372,11 @@ export default function Home() {
         <section id="app-library" className="library-section glass-panel">
           <div className="section-heading"><div><p className="eyebrow">PERSISTENT APP LIBRARY</p><h2>Created applications</h2></div><button className="text-action" onClick={() => void appsQuery.refetch()}>Refresh <ChevronRight size={15} /></button></div>
           {appsQuery.isLoading ? <div className="library-empty"><Loader2 className="spin" size={18} /> Loading your secured library</div> : sortedApps.length ? <div className="app-list">{sortedApps.map(app => <button className={cn("library-app", displayApp?.id === app.id && "selected")} key={app.id} onClick={() => openApp(app)}><span className="app-sigil">{app.name.slice(0, 1)}</span><span className="app-main"><b>{app.name}</b><small>{app.summary ?? "No description generated"}</small></span><span className="app-time">{formatDate(app.createdAt)}</span><AppStatus status={app.status} /><ChevronRight size={17} /></button>)}</div> : <div className="library-empty"><Plus size={17} /> No generated apps yet. Forge your first isolated workspace above.</div>}
+        </section>
+
+        <section className="collab-grid">
+          <div className="observability-card glass-panel"><div className="section-heading"><div><p className="eyebrow">RUNTIME OBSERVABILITY</p><h2>App event stream</h2></div><span className="status-pill status-ready"><i /> durable logs</span></div><input className="log-filter" value={logFilter} onChange={event => setLogFilter(event.target.value)} placeholder="Filter events, messages, or levels…" aria-label="Filter runtime logs" /><div className="log-list">{runtimeLogsQuery.isLoading ? <div className="library-empty">Loading app events…</div> : visibleLogs.map(log => <div className="log-row" key={log.id}><span className={cn("log-level", `log-${log.level}`)}>{log.level}</span><div><b>{log.event}</b><small>{log.message}</small></div><time>{formatDate(log.createdAt)}</time></div>)}{!runtimeLogsQuery.isLoading && !visibleLogs.length && <div className="library-empty">No matching runtime events.</div>}</div></div>
+          <div className="workspace-card glass-panel"><div className="section-heading"><div><p className="eyebrow">TEAM WORKSPACE</p><h2>{activeWorkspace?.name ?? "Personal workspace"}</h2></div><Users size={16} /></div><p className="empty-copy">Role-scoped collaboration keeps app artifacts and runtime data inside the right team boundary.</p><div className="workspace-meta"><span>{workspacesQuery.data?.[0]?.role ?? "owner"}</span><span>{membersQuery.data?.length ?? 0} member{(membersQuery.data?.length ?? 0) === 1 ? "" : "s"}</span><span>{invitesQuery.data?.length ?? 0} invite{(invitesQuery.data?.length ?? 0) === 1 ? "" : "s"}</span></div><div className="member-list">{(membersQuery.data ?? []).slice(0, 6).map(member => <span key={member.id}><b>{member.userId === user?.id ? "You" : `Member ${member.userId}`}</b>{member.userId === user?.id || member.role === "owner" ? <em>{member.role}</em> : <select value={member.role} onChange={event => changeMemberRole(member.id, event.target.value as "editor" | "viewer")} aria-label={`Role for member ${member.userId}`}><option value="viewer">viewer</option><option value="editor">editor</option></select>}</span>)}</div>{activeWorkspace ? <div className="invite-controls"><input value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="teammate@company.com" aria-label="Invite teammate email" /><select value={inviteRole} onChange={event => setInviteRole(event.target.value as "editor" | "viewer")} aria-label="Invite teammate role"><option value="viewer">Viewer</option><option value="editor">Editor</option></select><button className="secondary-action" onClick={inviteTeammate} disabled={inviteWorkspace.isPending || !inviteEmail.trim()}><UserPlus size={14} /> Invite</button></div> : <button className="secondary-action" onClick={createTeamWorkspace} disabled={createWorkspace.isPending}><Plus size={14} /> {createWorkspace.isPending ? "Creating workspace" : "Create team workspace"}</button>}</div>
         </section>
 
         <section id="agent-bridge" className="agent-bridge glass-panel">

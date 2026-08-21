@@ -3,11 +3,12 @@ import { z } from "zod";
 import {
   buildGeneratedApp,
   createGeneratedApp,
-  getGeneratedApp,
+  getAccessibleGeneratedApp,
   getUserForMcpToken,
   listGeneratedApps,
   toPublicApp,
 } from "./appBuilder";
+import { recordRuntimeLog } from "./collaboration";
 
 type JsonRpcRequest = { jsonrpc?: string; id?: string | number | null; method?: string; params?: unknown };
 
@@ -77,6 +78,7 @@ export function registerMcpRoutes(app: Express) {
       return;
     }
     try {
+      void recordRuntimeLog(userId, null, "mcp.request", `MCP ${request.method} request received.`).catch(() => undefined);
       if (request.method === "tools/list") {
         reply(res, request.id, { tools: getMcpToolCatalog() });
         return;
@@ -98,7 +100,7 @@ export function registerMcpRoutes(app: Express) {
         }
         if (params.name === "prismforge_get_app") {
           const { appId } = appInput.parse(input);
-          const built = await getGeneratedApp(userId, appId);
+          const built = await getAccessibleGeneratedApp(userId, appId, ["owner", "editor", "viewer"]);
           if (!built) throw new Error("Application not found.");
           reply(res, request.id, { content: [{ type: "text", text: JSON.stringify(toPublicApp(built), null, 2) }] });
           return;

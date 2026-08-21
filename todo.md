@@ -58,3 +58,23 @@
 
 - [x] Exercise the real rollback persistence helper with a non-owner app and verify it rejects ownership without mocking the failure.
 - [x] Add HTTP preview coverage proving a valid token cannot be reused for another user or another app.
+
+# Collaboration and Observability TODO
+
+- [x] Add deterministic read-only preview data fixtures derived from schema metadata, with no write capability.
+- [x] Add per-app runtime log records for generation, preview, export, rollback, and MCP events.
+- [x] Add authenticated runtime-log API and a filterable observability panel in the dashboard.
+- [x] Add team workspace and membership persistence with owner, editor, and viewer roles.
+- [x] Scope app library, build, preview, export, rollback, and MCP actions by workspace membership.
+- [x] Add collaboration UI for workspace context, members, roles, and invitation-ready controls.
+- [x] Add tests for fixture determinism, runtime-log ownership, and workspace role enforcement.
+- [x] Validate all three enhancements and save a new checkpoint.
+
+# Collaboration Gap Remediation TODO
+
+- [x] Add runtime-log writes for export downloads, schema rollback actions, and MCP key create/rotate/revoke or MCP request events.
+- [x] Add filter controls and filtering state to the dashboard observability panel, with behavior tests.
+- [x] Add authenticated workspace membership mutations for editor/viewer roles and invitation-ready records.
+- [x] Make build, preview, export, rollback, and MCP authorization consistently workspace-membership aware.
+- [x] Extend the collaboration UI with member list, role badges/controls, and invitation-ready actions.
+- [x] Add tests for runtime-log ownership access control and workspace role enforcement on shared apps/actions.

@@ -12,6 +12,15 @@
 - [x] Build the authenticated app library/gallery with lifecycle status, timestamps, previews, and quick actions.
 - [x] Apply the Invisible Glassmorphism visual system: translucent layers, deep blur, liquid transitions, and spatial depth.
 - [x] Add automated tests for generator contracts, app registry operations, export handling, and MCP request validation.
-- [ ] Validate responsive rendering, authenticated states, generation flow, export actions, and errors in a signed-in end-to-end session.
+- [x] Validate responsive rendering, authenticated states, generation flow, export actions, and errors in a signed-in end-to-end session.
 - [x] Diagnose and fix the reported blank interface in the user-facing preview.
 - [x] Verify that the repaired authentication transition renders the portal or dashboard rather than a blank surface in both signed-out and managed-preview authenticated states.
+
+- [x] Validate authenticated dashboard, library, and inspector at mobile/tablet breakpoints.
+- [x] Exercise a signed-in stream or generation failure and verify the visible error state.
+- [x] Confirm the authenticated SQLite artifact action downloads successfully.
+
+
+- [x] Capture explicit authenticated mobile and tablet evidence for the workspace, library, and inspector.
+- [x] Trigger and verify a user-facing in-app generation failure state from the signed-in UI.
+- [x] Confirm the SQLite artifact in browser download history, matching the ZIP confirmation.
